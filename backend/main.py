@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import os
@@ -7,6 +7,9 @@ from datetime import datetime
 import sqlite3
 from typing import List
 import json
+import random
+import string
+import logging
 
 app = FastAPI()
 
@@ -30,40 +33,110 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS files
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  file_id TEXT NOT NULL UNIQUE,
                   filename TEXT NOT NULL,
                   original_filename TEXT NOT NULL,
                   upload_date TEXT NOT NULL,
-                  file_size INTEGER NOT NULL)''')
+                  file_size INTEGER NOT NULL,
+                  expires_at INTEGER NOT NULL)''')
     conn.commit()
     conn.close()
 
 init_db()
 
+# Генерация короткого уникального file_id
+def generate_file_id(length=6):
+    chars = string.ascii_letters + string.digits
+    conn = sqlite3.connect('files.db')
+    c = conn.cursor()
+    while True:
+        file_id = ''.join(random.choices(chars, k=length))
+        c.execute('SELECT 1 FROM files WHERE file_id = ?', (file_id,))
+        if not c.fetchone():
+            break
+    conn.close()
+    return file_id
+
+def cleanup_expired_files():
+    now = int(datetime.now().timestamp())
+    conn = sqlite3.connect('files.db')
+    c = conn.cursor()
+    c.execute('SELECT file_id, filename, expires_at FROM files WHERE expires_at <= ?', (now,))
+    expired = c.fetchall()
+    for file_id, filename, _ in expired:
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        c.execute('DELETE FROM files WHERE file_id = ?', (file_id,))
+    conn.commit()
+    conn.close()
+
+MAX_FILE_SIZE = int(1.5 * 1024 * 1024 * 1024)  # 1.5 GB
+
+EXPIRE_OPTIONS = {
+    '5m': 5 * 60,
+    '15m': 15 * 60,
+    '1h': 60 * 60,
+    '12h': 12 * 60 * 60,
+    '24h': 24 * 60 * 60,
+}
+
 @app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    expire: str = Form('1h')
+):
     try:
+        print(f"Получен файл: {file.filename}, expire: {expire}")
+        cleanup_expired_files()
+        # Проверка имени файла
+        if '/' in file.filename or '\\' in file.filename:
+            raise HTTPException(status_code=400, detail="Недопустимое имя файла")
+        # Проверка времени хранения
+        if expire not in EXPIRE_OPTIONS:
+            raise HTTPException(status_code=400, detail="Недопустимый срок хранения")
+        # Генерируем короткий уникальный file_id
+        file_id = generate_file_id()
         # Генерируем уникальное имя файла
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_filename = f"{timestamp}_{file.filename}"
         file_path = os.path.join(UPLOAD_DIR, unique_filename)
-        
         # Сохраняем файл
+        size = 0
+        CHUNK_SIZE = 1024 * 1024  # 1 MB
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_FILE_SIZE:
+                    buffer.close()
+                    os.remove(file_path)
+                    raise HTTPException(status_code=400, detail="Файл слишком большой (максимум 1.5 ГБ)")
+                buffer.write(chunk)
+        file.file.close()
         # Получаем размер файла
         file_size = os.path.getsize(file_path)
-        
+        # Время истечения жизни файла
+        now = int(datetime.now().timestamp())
+        expires_at = now + EXPIRE_OPTIONS[expire]
         # Сохраняем информацию о файле в базу данных
         conn = sqlite3.connect('files.db')
         c = conn.cursor()
-        c.execute('''INSERT INTO files (filename, original_filename, upload_date, file_size)
-                     VALUES (?, ?, ?, ?)''',
-                  (unique_filename, file.filename, datetime.now().isoformat(), file_size))
+        c.execute('''INSERT INTO files (file_id, filename, original_filename, upload_date, file_size, expires_at)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (file_id, unique_filename, file.filename, datetime.now().isoformat(), file_size, expires_at))
         conn.commit()
         conn.close()
-        
-        return {"message": "File uploaded successfully", "filename": unique_filename}
+        return {
+            "file_id": file_id,
+            "filename": file.filename,
+            "mimetype": file.content_type,
+            "expires_at": expires_at
+        }
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -89,15 +162,23 @@ async def list_files():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/download/{filename}")
-async def download_file(filename: str):
-    file_path = os.path.join(UPLOAD_DIR, filename)
+@app.get("/download/{file_id}")
+async def download_file(file_id: str):
+    cleanup_expired_files()
+    conn = sqlite3.connect('files.db')
+    c = conn.cursor()
+    c.execute('SELECT filename, original_filename, expires_at FROM files WHERE file_id = ?', (file_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Файл не найден или срок хранения истёк")
+    unique_filename, original_filename, expires_at = row
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    
+        raise HTTPException(status_code=404, detail="Файл не найден или срок хранения истёк")
     return FileResponse(
         path=file_path,
-        filename=filename,
+        filename=original_filename,
         media_type='application/octet-stream'
     )
 

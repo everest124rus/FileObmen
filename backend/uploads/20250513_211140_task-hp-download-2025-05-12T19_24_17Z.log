@@ -1,0 +1,15 @@
+downloading http://download.proxmox.com/images/system/debian-11-standard_11.7-1_amd64.tar.zst to /var/lib/vz/template/cache/debian-11-standard_11.7-1_amd64.tar.zst
+--2025-05-13 02:24:17--  http://download.proxmox.com/images/system/debian-11-standard_11.7-1_amd64.tar.zst
+Resolving download.proxmox.com (download.proxmox.com)... 185.219.221.167, 2a0b:7140:5:100::167
+Connecting to download.proxmox.com (download.proxmox.com)|185.219.221.167|:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 122247556 (117M) [application/octet-stream]
+Saving to: '/var/lib/vz/template/cache/debian-11-standard_11.7-1_amd64.tar.zst.tmp_dwnl.9756'
+     0K ........ ........ ........ ........ 27% 10.4M 8s
+ 32768K ........ ........ ........ ........ 54% 14.8M 4s
+ 65536K ........ ........ ........ ........ 82% 15.5M 2s
+ 98304K ........ ........ ....             100% 15.7M=8.6s
+2025-05-13 02:24:26 (13.5 MB/s) - '/var/lib/vz/template/cache/debian-11-standard_11.7-1_amd64.tar.zst.tmp_dwnl.9756' saved [122247556/122247556]
+calculating checksum...OK, checksum verified
+download of 'http://download.proxmox.com/images/system/debian-11-standard_11.7-1_amd64.tar.zst' to '/var/lib/vz/template/cache/debian-11-standard_11.7-1_amd64.tar.zst' finished
+TASK OK
